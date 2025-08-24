@@ -3,24 +3,30 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select, Relationsh
 from sqlalchemy import case
 from typing import Optional, Annotated
 import requests
+from datetime import datetime
+from pydantic import BaseModel
 
-# ----------------- Database Setup -----------------
+# Database Setup
 sqlite_file_name = "database.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 
 connect_args = {"check_same_thread": False}
 engine = create_engine(sqlite_url, connect_args=connect_args)
 
-
-# ----------------- Models -----------------
+# Models
 class Player(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True)
-    rating: Optional[int] = None
+    rating: Optional[int] = None 
     profile_url: Optional[str] = None
 
-    games_as_white: list["Game"] = Relationship(back_populates="white", sa_relationship_kwargs={"foreign_keys": "[Game.white_id]"})
-    games_as_black: list["Game"] = Relationship(back_populates="black", sa_relationship_kwargs={"foreign_keys": "[Game.black_id]"})
+    games_as_white: list["Game"] = Relationship(
+        back_populates="white", sa_relationship_kwargs={"foreign_keys": "[Game.white_id]"}
+    )
+    games_as_black: list["Game"] = Relationship(
+        back_populates="black", sa_relationship_kwargs={"foreign_keys": "[Game.black_id]"}
+    )
+    ratings: list["PlayerRating"] = Relationship(back_populates="player")
 
 
 class Game(SQLModel, table=True):
@@ -44,11 +50,25 @@ class Game(SQLModel, table=True):
     white_id: Optional[int] = Field(default=None, foreign_key="player.id")
     black_id: Optional[int] = Field(default=None, foreign_key="player.id")
 
-    white: Optional[Player] = Relationship(back_populates="games_as_white", sa_relationship_kwargs={"foreign_keys": "[Game.white_id]"})
-    black: Optional[Player] = Relationship(back_populates="games_as_black", sa_relationship_kwargs={"foreign_keys": "[Game.black_id]"})
+    white: Optional[Player] = Relationship(
+        back_populates="games_as_white", sa_relationship_kwargs={"foreign_keys": "[Game.white_id]"}
+    )
+    black: Optional[Player] = Relationship(
+        back_populates="games_as_black", sa_relationship_kwargs={"foreign_keys": "[Game.black_id]"}
+    )
 
 
-# ----------------- DB Utilities -----------------
+class PlayerRating(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    player_id: int = Field(foreign_key="player.id")
+    mode: str  # blitz / bullet / rapid
+    rating: int
+    date: datetime
+
+    player: Player = Relationship(back_populates="ratings")
+
+
+# DB Utilities
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
@@ -60,8 +80,7 @@ def get_session():
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
-
-# ----------------- FastAPI -----------------
+# FastAPI
 app = FastAPI()
 
 
@@ -70,7 +89,23 @@ def on_startup():
     create_db_and_tables()
 
 
-# ----------------- Routes -----------------
+# Pydantic Schemas for Validation
+class RatingDetail(BaseModel):
+    rating: int
+    date: int  # epoch
+
+
+class ChessMode(BaseModel):
+    last: RatingDetail
+
+
+class PlayerStats(BaseModel):
+    chess_blitz: Optional[ChessMode] = None
+    chess_bullet: Optional[ChessMode] = None
+    chess_rapid: Optional[ChessMode] = None
+
+
+# Routes
 @app.get("/user/{username}/{year}/{month}")
 def get_user(username: str, year: int, month: int, session: SessionDep):
     username = username.lower()
@@ -78,7 +113,7 @@ def get_user(username: str, year: int, month: int, session: SessionDep):
     # Check if player already exists
     player = session.exec(select(Player).where(Player.username == username)).first()
     if not player:
-        # Fetch profile (just to populate basic info)
+        # Fetch profile
         profile_url = f"https://api.chess.com/pub/player/{username}"
         resp = requests.get(profile_url, headers={"User-Agent": "my-fastapi-app/0.1"})
         if resp.status_code != 200:
@@ -87,7 +122,6 @@ def get_user(username: str, year: int, month: int, session: SessionDep):
         pdata = resp.json()
         player = Player(
             username=username,
-            rating=pdata.get("chess_blitz", {}).get("last", {}).get("rating"),
             profile_url=pdata.get("url"),
         )
         session.add(player)
@@ -135,7 +169,7 @@ def get_user(username: str, year: int, month: int, session: SessionDep):
                 time_class=g.get("time_class"),
                 rules=g.get("rules"),
                 rated=g.get("rated"),
-                termination=g.get("end_time"),
+                termination=g.get("termination"),
                 start_time=g.get("start_time"),
                 end_time=g.get("end_time"),
                 white_result=g["white"].get("result"),
@@ -144,25 +178,52 @@ def get_user(username: str, year: int, month: int, session: SessionDep):
                 black_id=black.id,
             )
             session.add(game)
-        # Fetch ratings 
-        ratings_url = f"https://api.chess.com/pub/player/{username}/stats"
-        ratings_resp = requests.get(ratings_url,headers={"User-Agent": "my-fastapi-app/0.1"})
-        if ratings_resp.status_code != 200:
-            raise HTTPException(status_code=ratings_resp.status_code,detail=ratings_resp.text)
-        
-        rating_data = ratings_resp.json()
-        # Create db for this and then start analytics
+
+    # Fetch & Save Ratings
+    ratings_url = f"https://api.chess.com/pub/player/{username}/stats"
+    ratings_resp = requests.get(ratings_url, headers={"User-Agent": "my-fastapi-app/0.1"})
+    if ratings_resp.status_code != 200:
+        raise HTTPException(status_code=ratings_resp.status_code, detail=ratings_resp.text)
+
+    rating_data = ratings_resp.json()
+    stats = PlayerStats.model_validate(rating_data)
+
+    for mode in ["chess_blitz", "chess_bullet", "chess_rapid"]:
+        chess_mode = getattr(stats, mode)
+        if chess_mode and chess_mode.last:
+            rating = PlayerRating(
+                player_id=player.id,
+                mode=mode.replace("chess_", ""),
+                rating=chess_mode.last.rating,
+                date=datetime.utcfromtimestamp(chess_mode.last.date),
+            )
+            session.add(rating)
+            if mode == "chess_blitz":  # keep quick reference on Player
+                player.rating = chess_mode.last.rating
+
     session.commit()
 
-    return {"player": player, "games_saved": len(games_data)}
+    return {"player": player.username, "games_saved": len(games_data)}
 
 
-# ----------------- Analytics -----------------
-
+# Analytics
 @app.get("/analytics/{username}")
 def analytics(username: str, session: SessionDep):
     username = username.lower()
     player = session.exec(select(Player).where(Player.username == username)).first()
     if not player:
-        raise HTTPException(status_code=404,detail="Player not found")
-    return {"id":player.id,"username":player.username,"rating":player.rating}
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    ratings = session.exec(
+        select(PlayerRating).where(PlayerRating.player_id == player.id)
+    ).all()
+
+    return {
+        "id": player.id,
+        "username": player.username,
+        "latest_blitz": player.rating,
+        "all_ratings": [
+            {"mode": r.mode, "rating": r.rating, "date": r.date.isoformat()}
+            for r in ratings
+        ],
+    }
