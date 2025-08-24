@@ -227,3 +227,151 @@ def analytics(username: str, session: SessionDep):
             for r in ratings
         ],
     }
+    
+@app.get("/analytics/{username}/top-opening")
+def top_opening(username: str, session: SessionDep):
+    username = username.lower()
+
+    # Find player
+    player = session.exec(select(Player).where(Player.username == username)).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    # Build query with conditional counts
+    stmt = (
+        select(
+            Game.eco_code,
+            func.count().label("games_played"),
+            func.sum(
+                case(
+                    (
+                        (Game.white_id == player.id) & (Game.white_result == "win"),
+                        1,
+                    ),
+                    (
+                        (Game.black_id == player.id) & (Game.black_result == "win"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("wins"),
+            func.sum(
+                case(
+                    (
+                        (Game.white_id == player.id) & (Game.white_result == "checkmated"),
+                        1,
+                    ),
+                    (
+                        (Game.white_id == player.id) & (Game.white_result == "resigned"),
+                        1,
+                    ),
+                    (
+                        (Game.black_id == player.id) & (Game.black_result == "checkmated"),
+                        1,
+                    ),
+                    (
+                        (Game.black_id == player.id) & (Game.black_result == "resigned"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("losses"),
+            func.sum(
+                case(
+                    (
+                        (Game.white_id == player.id) & (Game.white_result == "agreed"),
+                        1,
+                    ),
+                    (
+                        (Game.black_id == player.id) & (Game.black_result == "agreed"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("draws"),
+        )
+        .where((Game.white_id == player.id) | (Game.black_id == player.id))
+        .where(Game.eco_code.isnot(None))
+        .group_by(Game.eco_code)
+        .order_by(func.count().desc())
+        .limit(1)
+    )
+
+    result = session.exec(stmt).first()
+
+    if not result:
+        return {"username": player.username, "top_opening": None}
+
+    eco_code, games_played, wins, losses, draws = result
+
+    return {
+        "username": player.username,
+        "top_opening": eco_code,
+        "games_played": games_played,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "win_rate": round((wins / games_played) * 100, 2) if games_played > 0 else None,
+    }
+
+def monthly_results(session: Session, player: Player, year: int, month: int):
+    start_epoch = int(datetime(year, month, 1).timestamp())
+    # crude way to get next month
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1)
+    else:
+        next_month = datetime(year, month + 1, 1)
+    end_epoch = int(next_month.timestamp())
+
+    stmt = (
+        select(
+            func.sum(
+                case(
+                    (
+                        (Game.white_id == player.id) & (Game.white_result == "win"),
+                        1,
+                    ),
+                    (
+                        (Game.black_id == player.id) & (Game.black_result == "win"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("wins"),
+            func.sum(
+                case(
+                    (
+                        (Game.white_id == player.id) & (Game.white_result.in_(["checkmated", "resigned"])),
+                        1,
+                    ),
+                    (
+                        (Game.black_id == player.id) & (Game.black_result.in_(["checkmated", "resigned"])),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("losses"),
+        )
+        .where((Game.white_id == player.id) | (Game.black_id == player.id))
+        .where(Game.end_time >= start_epoch)
+        .where(Game.end_time < end_epoch)
+    )
+
+    return session.exec(stmt).first()
+
+@app.get("/analytics/{username}/{year}/{month}/results")
+def monthly_summary(username: str, year: int, month: int, session: SessionDep):
+    username = username.lower()
+    player = session.exec(select(Player).where(Player.username == username)).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    wins, losses = monthly_results(session, player, year, month)
+
+    return {
+        "username": player.username,
+        "year": year,
+        "month": month,
+        "wins": wins or 0,
+        "losses": losses or 0,
+    }
