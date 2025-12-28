@@ -5,6 +5,7 @@ from typing import Optional, Annotated
 import requests
 from datetime import datetime
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 # Database Setup
 sqlite_file_name = "database.db"
@@ -83,6 +84,13 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # FastAPI
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],           # for development - allow all
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 def on_startup():
