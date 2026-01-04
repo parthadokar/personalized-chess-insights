@@ -29,6 +29,7 @@ def fetch_games(username: str, year: int, month: int):
     resp = requests.get(
         f"https://api.chess.com/pub/player/{username}/games/{year}/{month:02d}",
         headers={"User-Agent": "fastapi-app"},
+        timeout=10,
     )
     if resp.status_code == 404:
         return []
@@ -40,6 +41,7 @@ def fetch_stats(username: str):
     resp = requests.get(
         f"https://api.chess.com/pub/player/{username}/stats",
         headers={"User-Agent": "fastapi-app"},
+        timeout=10,
     )
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail="Stats fetch failed")
@@ -64,6 +66,10 @@ def avg_move_time(games):
             total_moves += 1
 
     return round(total_time / total_moves, 2) if total_moves else None
+
+@app.get("/")
+def health_check():
+    return {"status":"ok"}
 
 @app.get("/analytics/{username}/{year}/{month}/summary")
 def analytics_summary(username: str, year: int, month: int):
@@ -129,7 +135,7 @@ def analytics_summary(username: str, year: int, month: int):
         "top_openings": top_openings,
     }
 
-if __name == "__main__":
+if __name__ == "__main__":
     import uvicorn
     import os
     port = int(os.environ.get("PORT",8000))
