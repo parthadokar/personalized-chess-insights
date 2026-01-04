@@ -7,9 +7,13 @@ import re
 
 app = FastAPI()
 
+origins = [
+    "https://personalized-chess-insights.vercel.app"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -124,3 +128,9 @@ def analytics_summary(username: str, year: int, month: int):
         "latest_ratings": latest,
         "top_openings": top_openings,
     }
+
+if __name == "__main__":
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT",8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
