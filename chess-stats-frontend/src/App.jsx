@@ -3,7 +3,7 @@ import axios from "axios";
 import "./index.css";
 
 const API = axios.create({
-  baseURL: "http://127.0.0.1:8000",
+  baseURL: import.meta.env.VITE_API_BASE_URL,
 });
 
 function App() {
@@ -12,16 +12,22 @@ function App() {
   const [month, setMonth] = useState("");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
-
+  
   const loadData = async () => {
+    if (!username || !year || !month) {
+      alert("Please fill all fields");
+      return;
+    }
+
     try {
       setLoading(true);
       const res = await API.get(
-        `/analytics/${username}/${year}/${month}/summary`
+        `/analytics/${username.trim().toLowerCase()}/${year}/${month}/summary`
       );
       setData(res.data);
-    } catch {
+    } catch (err) {
       alert("Error fetching data");
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -30,7 +36,6 @@ function App() {
   return (
     <div className="app">
       <div className="container">
-
         <header className="card">
           <h1>Chess Analytics Dashboard</h1>
           <p className="subtitle">
@@ -116,7 +121,6 @@ function App() {
             </section>
           </>
         )}
-
       </div>
     </div>
   );
